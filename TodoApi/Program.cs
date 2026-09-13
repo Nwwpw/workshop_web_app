@@ -16,7 +16,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-var todoGroup = app.MapGroup("/api/todos");
+var todoGroup = app.MapGroup("/api/todos").WithTags("Todos");
 
 app.UseHttpsRedirection();
  
