@@ -1,4 +1,9 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
  
 using TodoApi.Dtos;
 using TodoApi.Models;
@@ -15,12 +20,51 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         builder.Configuration.GetConnectionString("DefaultConnection")
 ));
  
+var jwtKey = builder.Configuration["Jwt:Key"];
+builder.Services
+    .AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(jwtKey))
+        };
+    });
+
+builder.Services.AddAuthorization();
+
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.EnsureCreatedAsync();
+
+    var seedTodos = new[]
+    {
+        new TodoItem { Id = 1, Title = "Learn C#", IsCompleted = true, CreatedAt = DateTime.UtcNow },
+        new TodoItem { Id = 2, Title = "Learn ASP.NET Core", IsCompleted = false, CreatedAt = DateTime.UtcNow },
+        new TodoItem { Id = 3, Title = "Build a web API", IsCompleted = false, CreatedAt = DateTime.UtcNow }
+    };
+
+    foreach (var seedTodo in seedTodos)
+    {
+        if (!await db.Todos.AnyAsync(todo => todo.Id == seedTodo.Id))
+        {
+            db.Todos.Add(seedTodo);
+        }
+    }
+
+    await db.SaveChangesAsync();
 }
  
 // Configure the HTTP request pipeline.
@@ -30,6 +74,8 @@ if (app.Environment.IsDevelopment())
 }
  
 app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
  
 var todoGroup = app.MapGroup("/api/todos").WithTags("Todos");
  
@@ -116,9 +162,9 @@ todoGroup.MapGet("/", async (AppDbContext db) =>
                                 t.Title,
                                 t.IsCompleted));
                                 
-   return todos.Count == 0 ? Results.NotFound() : Results.Ok(todos);
-});
- 
+    return todos.Count == 0 ? Results.NotFound() : Results.Ok(todos);
+}).RequireAuthorization();
+
 todoGroup.MapPost("/", async (AppDbContext db, TodoPostDto dto) =>
 {    
     var lastTodo = await db.Todos.OrderByDescending(t => t.Id).FirstOrDefaultAsync();
@@ -138,8 +184,41 @@ todoGroup.MapPost("/", async (AppDbContext db, TodoPostDto dto) =>
     var todoGetDto = new TodoGetDto(todo.Id, todo.Title, todo.IsCompleted);
  
     return Results.Created($"/{todo.Id}", todoGetDto);
-});
- 
+}).RequireAuthorization();
+
 #endregion
  
+ 
+#region Authentication Endpoints
+
+app.MapPost("/api/login", (LoginDto dto, IConfiguration Configuration) =>
+{
+    // Validate the username and password (this is just a simple example, you should use a proper user store)
+    if (dto.Username != "admin" || dto.Password != "password") return Results.Unauthorized();
+
+    var claims = new[]
+    {
+        new Claim(ClaimTypes.Name, dto.Username)
+    };
+
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Configuration["Jwt:Key"]));
+
+    var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+    var token = new JwtSecurityToken(
+        issuer: Configuration["Jwt:Issuer"],
+        audience: Configuration["Jwt:Audience"],
+        claims: claims,
+        expires: DateTime.UtcNow.AddDays(int.Parse(Configuration["Jwt:ExpireDays"])),
+        signingCredentials: credentials
+    );
+
+    var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
+
+    return Results.Ok(new { Token = tokenString });
+}).WithName("Authenticate").WithName("Login")
+.Produces<LoginResponseDto>(StatusCodes.Status200OK)
+.Produces(StatusCodes.Status401Unauthorized);
+#endregion
+
 app.Run();
