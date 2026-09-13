@@ -16,6 +16,12 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 ));
  
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.EnsureCreatedAsync();
+}
  
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -104,6 +110,12 @@ todoGroup.MapGet("/", async (AppDbContext db) =>
 {
    var todos = await db.Todos.ToListAsync();
  
+   var todoGetDtos = todos.Select(t => 
+                            new TodoGetDto(
+                                t.Id,
+                                t.Title,
+                                t.IsCompleted));
+                                
    return todos.Count == 0 ? Results.NotFound() : Results.Ok(todos);
 });
  
